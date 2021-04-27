@@ -78,7 +78,6 @@ public class TextureMovieEncoder implements Runnable {
     private EglCore mEglCore;
     private FullFrameRect mFullScreen;
     private int mTextureId;
-    private int mFrameNum;
     private VideoEncoderCore mVideoEncoder;
 
     // ----- accessed by multiple threads -----
@@ -312,7 +311,6 @@ public class TextureMovieEncoder implements Runnable {
      */
     private void handleStartRecording(EncoderConfig config) {
         Log.d(TAG, "handleStartRecording " + config);
-        mFrameNum = 0;
         prepareEncoder(config.mEglContext, config.mWidth, config.mHeight, config.mBitRate,
                 config.mOutputFile);
     }
@@ -328,13 +326,13 @@ public class TextureMovieEncoder implements Runnable {
      */
     private void handleFrameAvailable(float[] transform, long timestampNanos) {
         if (VERBOSE) Log.d(TAG, "handleFrameAvailable tr=" + transform);
+
         mVideoEncoder.drainEncoder(false);
         mFullScreen.drawFrame(mTextureId, transform);
 
-        drawBox(mFrameNum++);
-
         mInputWindowSurface.setPresentationTime(timestampNanos);
         mInputWindowSurface.swapBuffers();
+
     }
 
     /**
