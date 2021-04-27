@@ -393,11 +393,14 @@ public class InternalCameraLiveActivity extends BaseActivity implements View.OnC
                     if (btn_start_record_video.getText().toString().equals("结束录制")) {
                         btn_start_record_video.setText("开始录制");
                         publisher.stopRecord();
+                        srsCameraGLSurfaceView.changeRecordingState(false);
                     } else {
                         btn_start_record_video.setText("结束录制");
                         publisher.startRecord(Environment.getExternalStorageDirectory().getPath() + "/test.mp4");
+                        srsCameraGLSurfaceView.changeRecordingState(true);
                     }
                 }
+
                 break;
         }
     }

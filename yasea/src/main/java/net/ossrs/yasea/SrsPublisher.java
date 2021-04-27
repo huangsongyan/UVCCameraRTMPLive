@@ -37,6 +37,7 @@ public class SrsPublisher {
         mCameraView.setPreviewCallback(new SrsCameraGLSurfaceView.PreviewCallback() {
             @Override
             public void onGetRgbaFrame(byte[] data, int width, int height) {
+                Log.d("SrsPublisher", "SrsPublisher_" + data.length);
                 calcSamplingFps();
                 if (!sendAudioOnly) {
                     mEncoder.onGetRgbaFrame(data, width, height);

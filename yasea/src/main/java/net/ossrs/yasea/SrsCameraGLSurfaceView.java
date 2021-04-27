@@ -6,17 +6,22 @@ import android.content.res.Configuration;
 import android.graphics.ImageFormat;
 import android.graphics.SurfaceTexture;
 import android.hardware.Camera;
+import android.opengl.EGL14;
 import android.opengl.GLES20;
 import android.opengl.GLSurfaceView;
 import android.opengl.Matrix;
+import android.os.Environment;
 import android.util.AttributeSet;
+import android.util.Log;
 import android.view.Surface;
 
+import com.serenegiant.encoder.TextureMovieEncoder;
 import com.seu.magicfilter.base.gpuimage.GPUImageFilter;
 import com.seu.magicfilter.utils.MagicFilterFactory;
 import com.seu.magicfilter.utils.MagicFilterType;
 import com.seu.magicfilter.utils.OpenGLUtils;
 
+import java.io.File;
 import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
 import java.util.List;
@@ -29,6 +34,10 @@ import javax.microedition.khronos.opengles.GL10;
  * Created by Leo Ma on 2016/2/25.
  */
 public class SrsCameraGLSurfaceView extends GLSurfaceView implements GLSurfaceView.Renderer {
+
+
+    private static String TAG = "SrsCameraGLSurfaceView";
+
     public static final int ERROR_CODE_CAMERA_OPEN_FAILED = 1;
     public static final int ERROR_CODE_CAMERA_EVICTED = 2;
     public static final int ERROR_CODE_CAMERA_PREVIEW_FAILED = 3;
@@ -45,6 +54,15 @@ public class SrsCameraGLSurfaceView extends GLSurfaceView implements GLSurfaceVi
     private float[] mProjectionMatrix = new float[16];
     private float[] mSurfaceMatrix = new float[16];
     private float[] mTransformMatrix = new float[16];
+
+    File mOutputFile;
+    private boolean mRecordingEnabled;
+    private int mRecordingStatus;
+    private static final int RECORDING_OFF = 0;
+    private static final int RECORDING_ON = 1;
+    private static final int RECORDING_RESUMED = 2;
+    private TextureMovieEncoder mVideoEncoder;
+
 
     private Camera mCamera;
     private ByteBuffer mGLPreviewBuffer;
@@ -64,6 +82,7 @@ public class SrsCameraGLSurfaceView extends GLSurfaceView implements GLSurfaceVi
 
     public SrsCameraGLSurfaceView(Context context, AttributeSet attrs) {
         super(context, attrs);
+        mVideoEncoder = new TextureMovieEncoder();
         setEGLContextClientVersion(2);
         setRenderer(this);
         setRenderMode(GLSurfaceView.RENDERMODE_WHEN_DIRTY);
@@ -74,12 +93,20 @@ public class SrsCameraGLSurfaceView extends GLSurfaceView implements GLSurfaceVi
         GLES20.glDisable(GL10.GL_DITHER);
         GLES20.glClearColor(0, 0, 0, 0);
 
+        mRecordingEnabled = mVideoEncoder.isRecording();
+        if (mRecordingEnabled) {
+            mRecordingStatus = RECORDING_RESUMED;
+        } else {
+            mRecordingStatus = RECORDING_OFF;
+        }
+
         magicFilter = new GPUImageFilter(MagicFilterType.NONE);
         magicFilter.init(getContext().getApplicationContext());
         magicFilter.onInputSizeChanged(mPreviewWidth, mPreviewHeight);
 
         mOESTextureId = OpenGLUtils.getExternalOESTextureID();
         surfaceTexture = new SurfaceTexture(mOESTextureId);
+
         surfaceTexture.setOnFrameAvailableListener(new SurfaceTexture.OnFrameAvailableListener() {
             @Override
             public void onFrameAvailable(SurfaceTexture surfaceTexture) {
@@ -122,20 +149,74 @@ public class SrsCameraGLSurfaceView extends GLSurfaceView implements GLSurfaceVi
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT | GLES20.GL_DEPTH_BUFFER_BIT);
 
         surfaceTexture.updateTexImage();
-
         surfaceTexture.getTransformMatrix(mSurfaceMatrix);
         Matrix.multiplyMM(mTransformMatrix, 0, mSurfaceMatrix, 0, mProjectionMatrix, 0);
         if (magicFilter != null) {
             magicFilter.setTextureTransformMatrix(mTransformMatrix);
             magicFilter.onDrawFrame(mOESTextureId);
 
-            if (mIsEncoding) {
-                mGLIntBufferCache.add(magicFilter.getGLFboBuffer());
-                synchronized (writeLock) {
-                    writeLock.notifyAll();
-                }
+//            if (mIsEncoding) {
+//                mGLIntBufferCache.add(magicFilter.getGLFboBuffer());
+//                synchronized (writeLock) {
+//                    writeLock.notifyAll();
+//                }
+//            }
+        }
+
+
+        //进行录制
+        if (mRecordingEnabled) {
+            switch (mRecordingStatus) {
+                case RECORDING_OFF:
+                    Log.d(TAG, "START recording");
+                    mOutputFile = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "camera-test" + System.currentTimeMillis() + ".mp4");
+                    Log.d(TAG, "file path = " + mOutputFile.getAbsolutePath());
+                    // start recording
+                    mVideoEncoder.startRecording(new TextureMovieEncoder.EncoderConfig(
+                            mOutputFile, mPreviewHeight, mPreviewWidth, 1000000, EGL14.eglGetCurrentContext()));
+                    mRecordingStatus = RECORDING_ON;
+                    break;
+                case RECORDING_RESUMED:
+                    Log.d(TAG, "RESUME recording");
+                    mVideoEncoder.updateSharedContext(EGL14.eglGetCurrentContext());
+                    mRecordingStatus = RECORDING_ON;
+                    break;
+                case RECORDING_ON:
+                    // yay
+                    break;
+                default:
+                    throw new RuntimeException("unknown status " + mRecordingStatus);
+            }
+        } else {
+            switch (mRecordingStatus) {
+                case RECORDING_ON:
+                case RECORDING_RESUMED:
+                    // stop recording
+                    Log.d(TAG, "STOP recording");
+                    mVideoEncoder.stopRecording();
+                    mRecordingStatus = RECORDING_OFF;
+                    break;
+                case RECORDING_OFF:
+                    // yay
+                    break;
+                default:
+                    throw new RuntimeException("unknown status " + mRecordingStatus);
             }
         }
+
+        // Set the video encoder's texture name.  We only need to do this once, but in the
+        // current implementation it has to happen after the video encoder is started, so
+        // we just do it here.
+        //
+        // TODO: be less lame.
+        mVideoEncoder.setTextureId(mOESTextureId);
+
+        // Tell the video encoder thread that a new frame is available.
+        // This will be ignored if we're not actually recording.
+        mVideoEncoder.frameAvailable(surfaceTexture);
+
+
+
     }
 
     public void setPreviewCallback(PreviewCallback cb) {
@@ -478,6 +559,7 @@ public class SrsCameraGLSurfaceView extends GLSurfaceView implements GLSurfaceVi
         }
     }
 
+
     public interface PreviewCallback {
 
         void onGetRgbaFrame(byte[] data, int width, int height);
@@ -491,6 +573,11 @@ public class SrsCameraGLSurfaceView extends GLSurfaceView implements GLSurfaceVi
         if (errorCallback != null) {
             errorCallback.onError(error);
         }
+    }
+
+    public void changeRecordingState(boolean isRecording) {
+        Log.d(TAG, "changeRecordingState: was " + mRecordingEnabled + " now " + isRecording);
+        mRecordingEnabled = isRecording;
     }
 
 }
