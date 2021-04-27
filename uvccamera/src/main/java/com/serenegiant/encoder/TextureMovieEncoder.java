@@ -1,69 +1,31 @@
-/*
- * Copyright 2013 Google Inc. All rights reserved.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 package com.serenegiant.encoder;
 
-
 import android.graphics.SurfaceTexture;
+import android.hardware.Camera;
 import android.opengl.EGLContext;
-import android.opengl.GLES20;
-import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
-import android.support.annotation.RequiresApi;
 import android.util.Log;
 
+import com.serenegiant.GlobalApp;
 import com.serenegiant.encoder.gles.EglCore;
-import com.serenegiant.encoder.gles.FullFrameRect;
-import com.serenegiant.encoder.gles.Texture2dProgram;
-import com.serenegiant.encoder.gles.WindowSurface;
+import com.serenegiant.filters.BaseFilter;
+import com.serenegiant.filters.NoneFilter;
+import com.serenegiant.filters.gpuFilters.baseFilter.GPUImageFilter;
+import com.serenegiant.filters.gpuFilters.baseFilter.MagicCameraInputFilter;
 
-import java.io.File;
 import java.io.IOException;
 import java.lang.ref.WeakReference;
+import java.nio.FloatBuffer;
 
 /**
- * Encode a movie from frames rendered from an external texture image.
- * <p>
- * The object wraps an encoder running on a dedicated thread.  The various control messages
- * may be sent from arbitrary threads (typically the app UI thread).  The encoder thread
- * manages both sides of the encoder (feeding and draining); the only external input is
- * the GL texture.
- * <p>
- * The design is complicated slightly by the need to create an EGL context that shares state
- * with a view that gets restarted if (say) the device orientation changes.  When the view
- * in question is a GLSurfaceView, we don't have full control over the EGL context creation
- * on that side, so we have to bend a bit backwards here.
- * <p>
- * To use:
- * <ul>
- * <li>create TextureMovieEncoder object
- * <li>create an EncoderConfig
- * <li>call TextureMovieEncoder#startRecording() with the config
- * <li>call TextureMovieEncoder#setTextureId() with the texture object that receives frames
- * <li>for each frame, after latching it with SurfaceTexture#updateTexImage(),
- *     call TextureMovieEncoder#frameAvailable().
- * </ul>
- *
- * TODO: tweak the API (esp. textureId) so it's less awkward for simple use cases.
+ * description:
+ * Created by aserbao on 2018/5/15.
  */
-@RequiresApi(api = Build.VERSION_CODES.JELLY_BEAN_MR2)
+
 public class TextureMovieEncoder implements Runnable {
-    private static final String TAG = "TextureMovieEncoder";
+    private static final String TAG = "";
     private static final boolean VERBOSE = false;
 
     private static final int MSG_START_RECORDING = 0;
@@ -72,12 +34,15 @@ public class TextureMovieEncoder implements Runnable {
     private static final int MSG_SET_TEXTURE_ID = 3;
     private static final int MSG_UPDATE_SHARED_CONTEXT = 4;
     private static final int MSG_QUIT = 5;
+    private static final int MSG_PAUSE = 6;
+    private static final int MSG_RESUME = 7;
 
     // ----- accessed exclusively by encoder thread -----
     private WindowSurface mInputWindowSurface;
     private EglCore mEglCore;
-    private FullFrameRect mFullScreen;
+    private MagicCameraInputFilter mInput;
     private int mTextureId;
+
     private VideoEncoderCore mVideoEncoder;
 
     // ----- accessed by multiple threads -----
@@ -86,7 +51,14 @@ public class TextureMovieEncoder implements Runnable {
     private Object mReadyFence = new Object();      // guards ready/running
     private boolean mReady;
     private boolean mRunning;
+    private GPUImageFilter filter;
+    private FloatBuffer gLCubeBuffer;
+    private FloatBuffer gLTextureBuffer;
+    private long baseTimeStamp = -1;//第一帧的时间戳
 
+    public TextureMovieEncoder() {
+
+    }
 
     /**
      * Encoder configuration.
@@ -96,18 +68,18 @@ public class TextureMovieEncoder implements Runnable {
      * under us).
      * <p>
      * TODO: make frame rate and iframe interval configurable?  Maybe use builder pattern
-     *       with reasonable defaults for those and bit rate.
+     * with reasonable defaults for those and bit rate.
      */
     public static class EncoderConfig {
-        final File mOutputFile;
+        final String path;
         final int mWidth;
         final int mHeight;
         final int mBitRate;
         final EGLContext mEglContext;
 
-        public EncoderConfig(File outputFile, int width, int height, int bitRate,
-                             EGLContext sharedEglContext) {
-            mOutputFile = outputFile;
+        public EncoderConfig(String path, int width, int height, int bitRate,
+                             EGLContext sharedEglContext, Camera.CameraInfo info) {
+            this.path = path;
             mWidth = width;
             mHeight = height;
             mBitRate = bitRate;
@@ -117,7 +89,7 @@ public class TextureMovieEncoder implements Runnable {
         @Override
         public String toString() {
             return "EncoderConfig: " + mWidth + "x" + mHeight + " @" + mBitRate +
-                    " to '" + mOutputFile.toString() + "' ctxt=" + mEglContext;
+                    " to '" + path + "' ctxt=" + mEglContext;
         }
     }
 
@@ -164,6 +136,14 @@ public class TextureMovieEncoder implements Runnable {
         mHandler.sendMessage(mHandler.obtainMessage(MSG_QUIT));
         // We don't know when these will actually finish (or even start).  We don't want to
         // delay the UI thread though, so we return immediately.
+    }
+
+    public void pauseRecording() {
+        mHandler.sendMessage(mHandler.obtainMessage(MSG_PAUSE));
+    }
+
+    public void resumeRecording() {
+        mHandler.sendMessage(mHandler.obtainMessage(MSG_RESUME));
     }
 
     /**
@@ -237,6 +217,7 @@ public class TextureMovieEncoder implements Runnable {
     /**
      * Encoder thread entry point.  Establishes Looper/Handler and waits for messages.
      * <p>
+     *
      * @see Thread#run()
      */
     @Override
@@ -300,6 +281,12 @@ public class TextureMovieEncoder implements Runnable {
                 case MSG_QUIT:
                     Looper.myLooper().quit();
                     break;
+                case MSG_PAUSE:
+                    encoder.handlePauseRecording();
+                    break;
+                case MSG_RESUME:
+                    encoder.handleResumeRecording();
+                    break;
                 default:
                     throw new RuntimeException("Unhandled msg what=" + what);
             }
@@ -312,7 +299,7 @@ public class TextureMovieEncoder implements Runnable {
     private void handleStartRecording(EncoderConfig config) {
         Log.d(TAG, "handleStartRecording " + config);
         prepareEncoder(config.mEglContext, config.mWidth, config.mHeight, config.mBitRate,
-                config.mOutputFile);
+                config.path);
     }
 
     /**
@@ -321,18 +308,39 @@ public class TextureMovieEncoder implements Runnable {
      * The texture is rendered onto the encoder's input surface, along with a moving
      * box (just because we can).
      * <p>
-     * @param transform The texture transform, from SurfaceTexture.
+     *
+     * @param transform      The texture transform, from SurfaceTexture.
      * @param timestampNanos The frame's timestamp, from SurfaceTexture.
      */
     private void handleFrameAvailable(float[] transform, long timestampNanos) {
         if (VERBOSE) Log.d(TAG, "handleFrameAvailable tr=" + transform);
-
         mVideoEncoder.drainEncoder(false);
-        mFullScreen.drawFrame(mTextureId, transform);
-
-        mInputWindowSurface.setPresentationTime(timestampNanos);
+        Log.e("hero", "---setTextureId==" + mTextureId);
+        mShowFilter.setTextureId(mTextureId);
+        mShowFilter.draw();
+        if (baseTimeStamp == -1) {
+            baseTimeStamp = System.nanoTime();
+            mVideoEncoder.startRecord();
+        }
+        long nano = System.nanoTime();
+        long time = nano - baseTimeStamp - pauseDelayTime;
+        System.out.println("TimeStampVideo=" + time + ";nanoTime=" + nano + ";baseTimeStamp=" + baseTimeStamp + ";pauseDelay=" + pauseDelayTime);
+        mInputWindowSurface.setPresentationTime(time);
         mInputWindowSurface.swapBuffers();
+    }
 
+    long pauseDelayTime;
+    long onceDelayTime;
+
+    private void handlePauseRecording() {
+        onceDelayTime = System.nanoTime();
+        mVideoEncoder.pauseRecording();
+    }
+
+    private void handleResumeRecording() {
+        onceDelayTime = System.nanoTime() - onceDelayTime;
+        pauseDelayTime += onceDelayTime;
+        mVideoEncoder.resumeRecording();
     }
 
     /**
@@ -341,6 +349,7 @@ public class TextureMovieEncoder implements Runnable {
     private void handleStopRecording() {
         Log.d(TAG, "handleStopRecording");
         mVideoEncoder.drainEncoder(true);
+        mVideoEncoder.stopAudRecord();
         releaseEncoder();
     }
 
@@ -364,7 +373,7 @@ public class TextureMovieEncoder implements Runnable {
 
         // Release the EGLSurface and EGLContext.
         mInputWindowSurface.releaseEglSurface();
-        mFullScreen.release(false);
+        mInput.destroy();
         mEglCore.release();
 
         // Create a new EGLContext and recreate the window surface.
@@ -373,23 +382,39 @@ public class TextureMovieEncoder implements Runnable {
         mInputWindowSurface.makeCurrent();
 
         // Create new programs and such for the new context.
-        mFullScreen = new FullFrameRect(
-                new Texture2dProgram(Texture2dProgram.ProgramType.TEXTURE_EXT));
+        mInput = new MagicCameraInputFilter();
+        mInput.init();
+        filter = null;
+        if (filter != null) {
+            filter.init();
+            filter.onInputSizeChanged(mPreviewWidth, mPreviewHeight);
+            filter.onDisplaySizeChanged(mVideoWidth, mVideoHeight);
+        }
     }
 
     private void prepareEncoder(EGLContext sharedContext, int width, int height, int bitRate,
-                                File outputFile) {
+                                String path) {
         try {
-            mVideoEncoder = new VideoEncoderCore(width, height, bitRate, outputFile);
+            mVideoEncoder = new VideoEncoderCore(width, height, bitRate, path);
         } catch (IOException ioe) {
             throw new RuntimeException(ioe);
         }
+        mVideoWidth = width;
+        mVideoHeight = height;
         mEglCore = new EglCore(sharedContext, EglCore.FLAG_RECORDABLE);
         mInputWindowSurface = new WindowSurface(mEglCore, mVideoEncoder.getInputSurface(), true);
         mInputWindowSurface.makeCurrent();
 
-        mFullScreen = new FullFrameRect(
-                new Texture2dProgram(Texture2dProgram.ProgramType.TEXTURE_EXT));
+        mInput = new MagicCameraInputFilter();
+        mInput.init();
+        filter = null;
+        if (filter != null) {
+            filter.init();
+            filter.onInputSizeChanged(mPreviewWidth, mPreviewHeight);
+            filter.onDisplaySizeChanged(mVideoWidth, mVideoHeight);
+        }
+        mShowFilter.create();
+        baseTimeStamp = -1;
     }
 
     private void releaseEncoder() {
@@ -398,26 +423,43 @@ public class TextureMovieEncoder implements Runnable {
             mInputWindowSurface.release();
             mInputWindowSurface = null;
         }
-        if (mFullScreen != null) {
-            mFullScreen.release(false);
-            mFullScreen = null;
+        if (mInput != null) {
+            mInput.destroy();
+            mInput = null;
         }
         if (mEglCore != null) {
             mEglCore.release();
             mEglCore = null;
         }
+        if (filter != null) {
+            filter.destroy();
+            filter = null;
+//            type = MagicFilterType.NONE;
+        }
     }
 
-    /**
-     * Draws a box, with position offset.
-     */
-    private void drawBox(int posn) {
-        final int width = mInputWindowSurface.getWidth();
-        int xpos = (posn * 4) % (width - 50);
-        GLES20.glEnable(GLES20.GL_SCISSOR_TEST);
-        GLES20.glScissor(xpos, 0, 100, 100);
-        GLES20.glClearColor(1.0f, 0.0f, 1.0f, 1.0f);
-        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
-        GLES20.glDisable(GLES20.GL_SCISSOR_TEST);
+    //    private MagicFilterType type = MagicFilterType.NONE;
+    private BaseFilter mShowFilter = new NoneFilter(GlobalApp.getApplication().getResources());
+//    public void setFilter(MagicFilterType type) {
+//        this.type = type;
+//    }
+
+    private int mPreviewWidth = -1;
+    private int mPreviewHeight = -1;
+    private int mVideoWidth = -1;
+    private int mVideoHeight = -1;
+
+    public void setPreviewSize(int width, int height) {
+        mPreviewWidth = width;
+        mPreviewHeight = height;
     }
+
+    public void setTextureBuffer(FloatBuffer gLTextureBuffer) {
+        this.gLTextureBuffer = gLTextureBuffer;
+    }
+
+    public void setCubeBuffer(FloatBuffer gLCubeBuffer) {
+        this.gLCubeBuffer = gLCubeBuffer;
+    }
+
 }

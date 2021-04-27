@@ -104,6 +104,7 @@ public class SrsCameraGLSurfaceView extends GLSurfaceView implements GLSurfaceVi
         magicFilter.init(getContext().getApplicationContext());
         magicFilter.onInputSizeChanged(mPreviewWidth, mPreviewHeight);
 
+
         mOESTextureId = OpenGLUtils.getExternalOESTextureID();
         surfaceTexture = new SurfaceTexture(mOESTextureId);
 
@@ -173,7 +174,7 @@ public class SrsCameraGLSurfaceView extends GLSurfaceView implements GLSurfaceVi
                     Log.d(TAG, "file path = " + mOutputFile.getAbsolutePath());
                     // start recording
                     mVideoEncoder.startRecording(new TextureMovieEncoder.EncoderConfig(
-                            mOutputFile, mPreviewHeight, mPreviewWidth, 1000000, EGL14.eglGetCurrentContext()));
+                            mOutputFile.getAbsolutePath(), mPreviewHeight, mPreviewWidth, 3500000, EGL14.eglGetCurrentContext(), null));
                     mRecordingStatus = RECORDING_ON;
                     break;
                 case RECORDING_RESUMED:
@@ -214,7 +215,6 @@ public class SrsCameraGLSurfaceView extends GLSurfaceView implements GLSurfaceVi
         // Tell the video encoder thread that a new frame is available.
         // This will be ignored if we're not actually recording.
         mVideoEncoder.frameAvailable(surfaceTexture);
-
 
 
     }
