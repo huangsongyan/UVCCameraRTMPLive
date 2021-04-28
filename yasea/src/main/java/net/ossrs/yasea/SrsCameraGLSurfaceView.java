@@ -16,6 +16,7 @@ import android.util.Log;
 import android.view.Surface;
 
 import com.serenegiant.encoder.TextureMovieEncoder;
+import com.serenegiant.utils.MatrixUtils;
 import com.seu.magicfilter.base.gpuimage.GPUImageFilter;
 import com.seu.magicfilter.utils.MagicFilterFactory;
 import com.seu.magicfilter.utils.MagicFilterType;
@@ -152,6 +153,8 @@ public class SrsCameraGLSurfaceView extends GLSurfaceView implements GLSurfaceVi
         surfaceTexture.updateTexImage();
         surfaceTexture.getTransformMatrix(mSurfaceMatrix);
         Matrix.multiplyMM(mTransformMatrix, 0, mSurfaceMatrix, 0, mProjectionMatrix, 0);
+
+
         if (magicFilter != null) {
             magicFilter.setTextureTransformMatrix(mTransformMatrix);
             magicFilter.onDrawFrame(mOESTextureId);
@@ -174,7 +177,7 @@ public class SrsCameraGLSurfaceView extends GLSurfaceView implements GLSurfaceVi
                     Log.d(TAG, "file path = " + mOutputFile.getAbsolutePath());
                     // start recording
                     mVideoEncoder.startRecording(new TextureMovieEncoder.EncoderConfig(
-                            mOutputFile.getAbsolutePath(), mPreviewHeight, mPreviewWidth, 3500000, EGL14.eglGetCurrentContext(), null));
+                            mOutputFile.getAbsolutePath(), mPreviewHeight, mPreviewWidth, 3500000, EGL14.eglGetCurrentContext()));
                     mRecordingStatus = RECORDING_ON;
                     break;
                 case RECORDING_RESUMED:

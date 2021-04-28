@@ -1,23 +1,18 @@
 package com.serenegiant.encoder;
 
 import android.graphics.SurfaceTexture;
-import android.hardware.Camera;
 import android.opengl.EGLContext;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
 import android.util.Log;
 
-import com.serenegiant.GlobalApp;
 import com.serenegiant.encoder.gles.EglCore;
-import com.serenegiant.filters.BaseFilter;
-import com.serenegiant.filters.NoneFilter;
-import com.serenegiant.filters.gpuFilters.baseFilter.GPUImageFilter;
-import com.serenegiant.filters.gpuFilters.baseFilter.MagicCameraInputFilter;
+import com.serenegiant.encoder.gles.FullFrameRect;
+import com.serenegiant.encoder.gles.Texture2dProgram;
 
 import java.io.IOException;
 import java.lang.ref.WeakReference;
-import java.nio.FloatBuffer;
 
 /**
  * description:
@@ -25,7 +20,8 @@ import java.nio.FloatBuffer;
  */
 
 public class TextureMovieEncoder implements Runnable {
-    private static final String TAG = "";
+
+    private static final String TAG = "TextureMovieEncoder";
     private static final boolean VERBOSE = false;
 
     private static final int MSG_START_RECORDING = 0;
@@ -40,9 +36,8 @@ public class TextureMovieEncoder implements Runnable {
     // ----- accessed exclusively by encoder thread -----
     private WindowSurface mInputWindowSurface;
     private EglCore mEglCore;
-    private MagicCameraInputFilter mInput;
+    private FullFrameRect mFullScreen;
     private int mTextureId;
-
     private VideoEncoderCore mVideoEncoder;
 
     // ----- accessed by multiple threads -----
@@ -51,10 +46,9 @@ public class TextureMovieEncoder implements Runnable {
     private Object mReadyFence = new Object();      // guards ready/running
     private boolean mReady;
     private boolean mRunning;
-    private GPUImageFilter filter;
-    private FloatBuffer gLCubeBuffer;
-    private FloatBuffer gLTextureBuffer;
+
     private long baseTimeStamp = -1;//第一帧的时间戳
+
 
     public TextureMovieEncoder() {
 
@@ -78,7 +72,7 @@ public class TextureMovieEncoder implements Runnable {
         final EGLContext mEglContext;
 
         public EncoderConfig(String path, int width, int height, int bitRate,
-                             EGLContext sharedEglContext, Camera.CameraInfo info) {
+                             EGLContext sharedEglContext) {
             this.path = path;
             mWidth = width;
             mHeight = height;
@@ -316,8 +310,9 @@ public class TextureMovieEncoder implements Runnable {
         if (VERBOSE) Log.d(TAG, "handleFrameAvailable tr=" + transform);
         mVideoEncoder.drainEncoder(false);
         Log.e("hero", "---setTextureId==" + mTextureId);
-        mShowFilter.setTextureId(mTextureId);
-        mShowFilter.draw();
+
+        mFullScreen.drawFrame(mTextureId, transform);
+
         if (baseTimeStamp == -1) {
             baseTimeStamp = System.nanoTime();
             mVideoEncoder.startRecord();
@@ -373,7 +368,7 @@ public class TextureMovieEncoder implements Runnable {
 
         // Release the EGLSurface and EGLContext.
         mInputWindowSurface.releaseEglSurface();
-        mInput.destroy();
+        mFullScreen.release(false);
         mEglCore.release();
 
         // Create a new EGLContext and recreate the window surface.
@@ -382,14 +377,8 @@ public class TextureMovieEncoder implements Runnable {
         mInputWindowSurface.makeCurrent();
 
         // Create new programs and such for the new context.
-        mInput = new MagicCameraInputFilter();
-        mInput.init();
-        filter = null;
-        if (filter != null) {
-            filter.init();
-            filter.onInputSizeChanged(mPreviewWidth, mPreviewHeight);
-            filter.onDisplaySizeChanged(mVideoWidth, mVideoHeight);
-        }
+        mFullScreen = new FullFrameRect(
+                new Texture2dProgram(Texture2dProgram.ProgramType.TEXTURE_EXT));
     }
 
     private void prepareEncoder(EGLContext sharedContext, int width, int height, int bitRate,
@@ -399,21 +388,12 @@ public class TextureMovieEncoder implements Runnable {
         } catch (IOException ioe) {
             throw new RuntimeException(ioe);
         }
-        mVideoWidth = width;
-        mVideoHeight = height;
         mEglCore = new EglCore(sharedContext, EglCore.FLAG_RECORDABLE);
         mInputWindowSurface = new WindowSurface(mEglCore, mVideoEncoder.getInputSurface(), true);
         mInputWindowSurface.makeCurrent();
 
-        mInput = new MagicCameraInputFilter();
-        mInput.init();
-        filter = null;
-        if (filter != null) {
-            filter.init();
-            filter.onInputSizeChanged(mPreviewWidth, mPreviewHeight);
-            filter.onDisplaySizeChanged(mVideoWidth, mVideoHeight);
-        }
-        mShowFilter.create();
+        mFullScreen = new FullFrameRect(
+                new Texture2dProgram(Texture2dProgram.ProgramType.TEXTURE_EXT));
         baseTimeStamp = -1;
     }
 
@@ -423,43 +403,15 @@ public class TextureMovieEncoder implements Runnable {
             mInputWindowSurface.release();
             mInputWindowSurface = null;
         }
-        if (mInput != null) {
-            mInput.destroy();
-            mInput = null;
+        if (mFullScreen != null) {
+            mFullScreen.release(false);
+            mFullScreen = null;
         }
         if (mEglCore != null) {
             mEglCore.release();
             mEglCore = null;
         }
-        if (filter != null) {
-            filter.destroy();
-            filter = null;
-//            type = MagicFilterType.NONE;
-        }
-    }
 
-    //    private MagicFilterType type = MagicFilterType.NONE;
-    private BaseFilter mShowFilter = new NoneFilter(GlobalApp.getApplication().getResources());
-//    public void setFilter(MagicFilterType type) {
-//        this.type = type;
-//    }
-
-    private int mPreviewWidth = -1;
-    private int mPreviewHeight = -1;
-    private int mVideoWidth = -1;
-    private int mVideoHeight = -1;
-
-    public void setPreviewSize(int width, int height) {
-        mPreviewWidth = width;
-        mPreviewHeight = height;
-    }
-
-    public void setTextureBuffer(FloatBuffer gLTextureBuffer) {
-        this.gLTextureBuffer = gLTextureBuffer;
-    }
-
-    public void setCubeBuffer(FloatBuffer gLCubeBuffer) {
-        this.gLCubeBuffer = gLCubeBuffer;
     }
 
 }
